@@ -116,10 +116,10 @@ Hufftree* new_Hufftree(Frequency *frequency, int size)
       hufftree->tree = top;
       break;
     }
-    pqueue_p++; pqueue_sz--;
+    pqueue_p++; pqueue_sz--; nb_nodes++;
     pqueue_p[0] = new_Node2(top,top2);
   }
-  char* bitvec = new_bitstr(nb_nodes*2);
+  char* bitvec = new_bitstr(nb_nodes+4);
   assert(BITSTR_LEN(bitvec) == 0);
   fill_Node(hufftree->tree, hufftree->encoding, bitvec);
   delete_bitstr( bitvec );
