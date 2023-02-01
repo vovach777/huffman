@@ -259,8 +259,8 @@ Hufftree*  new_Hufftree2(char * from, char **end) {
            return new_Node2( left, right );
       }
    }
-   if (end) *end = from;
    hufftree->tree = unpack();
+   if (end) *end = from;
    return hufftree;
 }
 
