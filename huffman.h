@@ -40,9 +40,15 @@ typedef struct Hufftree Hufftree;
 
 
 Hufftree* new_Hufftree(Frequency *frequency, int size);
-void delete_Hufftree(Hufftree** hufftree);
+Hufftree*  new_Hufftree2(char * from, char **end);
+void delete_Hufftree(Hufftree* hufftree);
+void delete_Hufftreep(Hufftree** hufftree);
 char * encode_Hufftree(Hufftree*h, unsigned v);
 int decode_Hufftree(Hufftree*h, char * from, char ** end);
+
+char * encode_Hufftree2(Hufftree*h, unsigned v);
+int decode_Hufftree2(Hufftree*h, char * from, char ** end);
+char *  encodetree_Hufmantree( Hufftree*h);
 
 #define BITSTR_LEN(s) (((uint16_t*)(s))[-1])
 
@@ -63,10 +69,70 @@ static void delete_bitstr(char*bitstr) {
    }
 }
 
-static void bitstr_print(char*bitstr) {
-   int size = BITSTR_LEN(bitstr);
-   while (size--) printf("%d",(int)*bitstr++);
+static void delete_bitstrp(char**bitstr ) {
+   if (bitstr) {
+      delete_bitstr(*bitstr);
+      *bitstr=NULL;
+   }
+}
 
+static void bitstr_print(char*bitstr) {
+   if (bitstr) {
+      int size = BITSTR_LEN(bitstr);
+      while (size--) printf("%d",(int)*bitstr++);
+   }
+}
+
+static char * bitstr_add(const char* str1,  const char* str2) {
+   const int len1 = BITSTR_LEN(str1);
+   const int len2 = BITSTR_LEN(str2);
+   const int len3 = len1 + len2;
+
+   char * str3 = new_bitstr( len3 );
+   BITSTR_LEN(str3) = len3;
+   memcpy(str3, str1, len1);
+   memcpy(str3+len1, str2, len2);
+   return str3;
+}
+
+/* golomb */
+
+static char * encode_golomb_u_bitstr( unsigned d) {
+   d += 1;
+   int bit_count = 32 - __builtin_clz(d);
+   int ziro_count = bit_count-1;
+
+   char *res = new_bitstr(ziro_count + bit_count);
+   int len=0;
+
+   while (ziro_count--) {
+      res[len++] = 0;
+   }
+   while (bit_count--) {
+      int bit = !!( d & (1 << (bit_count)) );
+      res[len++] = bit;
+   }
+   BITSTR_LEN(res) = len;
+   return res;
+}
+
+
+static unsigned decode_golomb_u_str(char*from, char**end) {
+    int bit_count=0;
+    while ( *from++==0) {
+        bit_count++;
+    }
+    if (bit_count == 0) {
+        if (end) *end = from;
+        return 0;
+    }
+    unsigned res = 1;
+    while (bit_count--) {
+        res = res << 1 | (*from++);
+    }
+
+   if (end) *end = from;
+    return res-1;
 }
 
 #endif
