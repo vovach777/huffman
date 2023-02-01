@@ -181,7 +181,8 @@ void print_Hufftree(Hufftree*h) {
       //    printf("%4c: ", i);
       // else
          printf("%4d: ", i);
-         bitstr_print(h->encoding[i].code_value);
+         bitstr_print(h->encoding[i].code);
+         //bitstr_print(h->encoding[i].code_value);
          printf("\n");
       }
    }
