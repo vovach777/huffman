@@ -26,113 +26,204 @@ Retrieved from: http://en.literateprograms.org/Huffman_coding_(C_Plus_Plus)?oldi
 
 #ifndef HUFFMAN_H_INC
 #define HUFFMAN_H_INC
+#define BINARY_CODES
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <assert.h>
 
-typedef int DataType;
+typedef uint32_t DataType;
 typedef int Frequency;
 struct Hufftree;
 typedef struct Hufftree Hufftree;
-
+struct PutBitContext;
+typedef struct PutBitContext PutBitContext;
+struct GetBitContext;
+typedef struct GetBitContext GetBitContext;
 
 Hufftree* new_Hufftree(Frequency *frequency, int size);
-Hufftree*  new_Hufftree2(char * from, char **end);
+Hufftree*  new_Hufftree2(GetBitContext *s, int size);
+size_t encodetree_Hufmantree( Hufftree*h, PutBitContext *s);
+DataType decode_Hufftree(Hufftree*h, GetBitContext *s);
+void encode_Hufftree(Hufftree*h, DataType v, PutBitContext *s);
+
 void delete_Hufftree(Hufftree* hufftree);
 void delete_Hufftreep(Hufftree** hufftree);
-char * encode_Hufftree(Hufftree*h, unsigned v);
-int decode_Hufftree(Hufftree*h, char * from, char ** end);
 
-char * encode_Hufftree2(Hufftree*h, unsigned v);
-int decode_Hufftree2(Hufftree*h, char * from, char ** end);
-char *  encodetree_Hufmantree( Hufftree*h);
+struct PutBitContext {
+    uint32_t bit_buf;
+    int bit_left;
+    uint8_t *buf, *buf_ptr, *buf_end;
+};
 
-#define BITSTR_LEN(s) (((uint16_t*)(s))[-1])
-
-static char * bitstr_dup(const char* bitstr) {
-   uint16_t size = BITSTR_LEN(bitstr) + 2;
-   char * dupstr = (char*) malloc(size);
-   memcpy(dupstr, bitstr-2, size);
-   return dupstr+2;
-}
-
-static char* new_bitstr(int size) {
-   return  (char*) calloc(size+2,1) + 2;
-}
-
-static void delete_bitstr(char*bitstr) {
-   if (bitstr) {
-      free( bitstr-2 );
-   }
-}
-
-static void delete_bitstrp(char**bitstr ) {
-   if (bitstr) {
-      delete_bitstr(*bitstr);
-      *bitstr=NULL;
-   }
-}
-
-static void bitstr_print(char*bitstr) {
-   if (bitstr) {
-      int size = BITSTR_LEN(bitstr);
-      while (size--) printf("%d",(int)*bitstr++);
-   }
-}
-
-static char * bitstr_add(const char* str1,  const char* str2) {
-   const int len1 = BITSTR_LEN(str1);
-   const int len2 = BITSTR_LEN(str2);
-   const int len3 = len1 + len2;
-
-   char * str3 = new_bitstr( len3 );
-   BITSTR_LEN(str3) = len3;
-   memcpy(str3, str1, len1);
-   memcpy(str3+len1, str2, len2);
-   return str3;
-}
-
-/* golomb */
-
-static char * encode_golomb_u_bitstr( unsigned d) {
-   d += 1;
-   int bit_count = 32 - __builtin_clz(d);
-   int ziro_count = bit_count-1;
-
-   char *res = new_bitstr(ziro_count + bit_count);
-   int len=0;
-
-   while (ziro_count--) {
-      res[len++] = 0;
-   }
-   while (bit_count--) {
-      int bit = !!( d & (1 << (bit_count)) );
-      res[len++] = bit;
-   }
-   BITSTR_LEN(res) = len;
-   return res;
-}
-
-
-static unsigned decode_golomb_u_str(char*from, char**end) {
-    int bit_count=0;
-    while ( *from++==0) {
-        bit_count++;
+static inline void init_put_bits(PutBitContext *s, uint8_t *buffer, size_t buffer_size)
+{
+    if (buffer_size < 0) {
+        buffer_size = 0;
+        buffer      = NULL;
     }
-    if (bit_count == 0) {
-        if (end) *end = from;
+
+    s->buf          = buffer;
+    s->buf_end      = s->buf + buffer_size;
+    s->buf_ptr      = s->buf;
+    s->bit_left     = 32;
+    s->bit_buf      = 0;
+}
+
+static inline void rebase_put_bits(PutBitContext *s, uint8_t *buffer,
+                                   size_t buffer_size)
+{
+    s->buf_end = buffer + buffer_size;
+    s->buf_ptr = buffer + (s->buf_ptr - s->buf);
+    s->buf     = buffer;
+}
+
+static void check_grow( PutBitContext* pb ) {
+      if (pb->buf == NULL) {
+          init_put_bits(pb, malloc(256+32), 256 );
+      }
+      else
+      if ( pb->buf_end-pb->buf_ptr  < 256 ) {
+         size_t sz = (pb->buf_end-pb->buf)*2;
+         if (sz < 256) sz = 256;
+         rebase_put_bits(pb,realloc(pb->buf, sz +  32), sz);
+      }
+}
+
+
+static inline size_t put_bytes_count(PutBitContext *s)
+{
+   check_grow(s);
+    if (s->bit_left < 32)
+        s->bit_buf <<= s->bit_left;
+    while (s->bit_left < 32) {
+        *s->buf_ptr++ = s->bit_buf >> (32 - 8);
+        s->bit_buf  <<= 8;
+        s->bit_left  += 8;
+    }
+    s->bit_left = 32;
+    s->bit_buf  = 0;
+    return s->buf_ptr - s->buf + (size_t)((32 - s->bit_left + (7)) >> 3);
+}
+
+
+
+static inline void put_bits(PutBitContext *s, int n, uint32_t value)
+{
+    check_grow(s);
+    uint32_t bit_buf;
+    int bit_left;
+    bit_left = s->bit_left;
+    bit_buf  = s->bit_buf;
+
+    if (n < bit_left) {
+        bit_buf     = (bit_buf << n) | value;
+        bit_left   -= n;
+    } else {
+        bit_buf   <<= bit_left;
+        bit_buf    |= value >> (n - bit_left);
+        *((uint32_t*) s->buf_ptr) = __builtin_bswap32(bit_buf);
+        s->buf_ptr += 4;
+        bit_left   += 32 - n;
+        bit_buf     = value;
+    }
+    s->bit_buf  = bit_buf;
+    s->bit_left = bit_left;
+}
+
+/**
+ * Write exactly 32 bits into a bitstream.
+ */
+static void put_bits32(PutBitContext *s, uint32_t value)
+{
+   check_grow(s);
+    uint32_t bit_buf;
+    int bit_left;
+
+    bit_buf  = s->bit_buf;
+    bit_left = s->bit_left;
+
+    bit_buf     = (uint64_t)bit_buf << bit_left;
+    bit_buf    |= (uint32_t)value >> (32 - bit_left);
+    *((uint32_t*) s->buf_ptr) = __builtin_bswap32(bit_buf);
+   s->buf_ptr += 4;
+
+    bit_buf     = value;
+    s->bit_buf  = bit_buf;
+    s->bit_left = bit_left;
+}
+
+
+
+struct GetBitContext {
+    const uint8_t *buffer, *buffer_end;
+    size_t index;
+    size_t size_in_bits;
+};
+
+
+static void init_get_bits(GetBitContext *s, const uint8_t *buffer, size_t buffer_size)
+{
+    s->buffer             = buffer;
+    s->size_in_bits       = buffer_size << 3;
+    s->buffer_end         = buffer + buffer_size;
+    s->index              = 0;
+}
+
+
+static inline unsigned int get_bits1(GetBitContext *s)
+{
+    size_t index = s->index;
+    if (index >= s->size_in_bits) {
+      //printf("overflow!");
+       return -1;
+    }
+    uint8_t result     = s->buffer[index >> 3];
+    result <<= index & 7;
+    result >>= 8 - 1;
+    index++;
+    s->index = index;
+    return result;
+}
+
+/**
+ * Read 1-25 bits.
+ */
+static inline unsigned int get_bits(GetBitContext *s, int n)
+{
+   assert(n>0 && n<=25);
+    union unaligned_32 { uint32_t l; } __attribute__((packed)) __attribute__((may_alias));
+    register unsigned int tmp;
+    unsigned int re_index = s->index;
+    unsigned int re_cache;
+    re_cache = __builtin_bswap32( ( (const union unaligned_32 *)(s->buffer + (re_index >> 3))   )->l) << (re_index & 7);
+    tmp = (((uint32_t)(re_cache))>>(32-n));
+    re_index += n;
+    s->index = re_index;
+    return tmp;
+}
+
+/**
+ * Read 0-32 bits.
+ */
+
+static inline unsigned int get_bits_long(GetBitContext *s, int n)
+{
+   assert(n>=0 && n<=32);
+    if (!n) {
         return 0;
-    }
-    unsigned res = 1;
-    while (bit_count--) {
-        res = res << 1 | (*from++);
+
+    } else if (n <= 25) {
+        return get_bits(s, n);
+    } else {
+        unsigned ret = get_bits(s, 16) << (n - 16);
+        return ret | get_bits(s, n - 16);
+
     }
 
-   if (end) *end = from;
-    return res-1;
 }
 
 #endif
