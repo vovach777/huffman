@@ -9,24 +9,10 @@ typedef struct SEncoding SEncoding;
 
 
 struct SEncoding {
-   char * code;    //classic huffman
-   char * code_value; //code + symbol
-   size_t send_count;
+   uint32_t code;
+   int      bit_length;
 };
 
-void SEncoding_init(SEncoding* se, char * prefix, unsigned v) {
-   se->code = bitstr_dup(prefix);
-   char * tmp = encode_golomb_u_bitstr(v);
-   se->code_value = bitstr_add(prefix, tmp);
-   delete_bitstr(tmp);
-   se->send_count = 0;
-}
-
-void SEncoding_free(SEncoding* se)  {
-   delete_bitstrp(&se->code);
-   delete_bitstrp(&se->code_value);
-   se->send_count = 0;
-}
 
 
 struct Hufftree
@@ -35,19 +21,29 @@ struct Hufftree
   int size;     //alphabet size
   int symbols;  //symbols (freq > 0);
   SEncoding* encoding;
+  Node*nodesPool;
 };
 
 
 struct Node
 {
-   Frequency frequency;
    Node* leftChild;
    Node* rightChild; // if leftChild != 0
+   Frequency frequency;
    DataType data;  // if leftChild == 0
 };
 
-  Node* new_Node(Frequency f, DataType d) {
-      Node* n = calloc(1,sizeof(Node));
+
+static int ilog2_32(uint32_t v)
+{
+   if (!v)
+      return 0;
+
+   return 32-__builtin_clz(v);
+}
+
+
+  static Node* init_Node(Frequency f, DataType d, Node* n) {
       n->frequency = f;
       n->data = d;
       return n;
@@ -55,56 +51,34 @@ struct Node
 
 
 
-  Node* new_Node2(Node* left, Node* right) {
-   Node* n = calloc(1,sizeof(Node));
+  static Node* init_Node2(Node* left, Node* right, Node*n) {
     n->frequency = left->frequency + right->frequency;
-    n->data = (left->data << 8) | (right->data << 16);
+    n->data = 0;
     n->leftChild = left;
     n->rightChild = right;
     return n;
   }
 
-  void delete_Node(Node *n)
+
+static void fill_Node(Node *n, Hufftree* h,uint32_t prefix, int bit_length)
   {
     if (n->leftChild)
     {
-      delete_Node(n->leftChild);
-      delete_Node(n->rightChild);
-    }
-  };
-
-
-  static void fill_Node(Node *n, Hufftree* h,char*prefix )
-  {
-    if (n->leftChild)
-    {
-      int level_len = BITSTR_LEN(prefix)+1;
-      BITSTR_LEN(prefix) = level_len;
-      prefix[ level_len-1 ] = 0;
-      fill_Node(n->leftChild, h, prefix);
-      BITSTR_LEN(prefix) = level_len;
-      prefix[ level_len-1 ] = 1;
-      fill_Node(n->rightChild, h, prefix);
-      BITSTR_LEN(prefix) = level_len-1;
+      fill_Node(n->leftChild,  h, prefix<<1, bit_length+1);
+      fill_Node(n->rightChild, h, prefix<<1|1, bit_length+1);
     }
     else {
-      SEncoding_init( &h->encoding[n->data], prefix, n->data );
+      h->encoding[n->data].bit_length = bit_length;
+      h->encoding[n->data].code = prefix;
     }
 }
 
-//static int codes_to_values[16] = {-7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 255};
-
-
 void delete_Hufftree(Hufftree* hufftree) {
    if (hufftree) {
-      for (int i=0; i<  hufftree->size; i++) {
-         delete_bitstrp( &hufftree->encoding[i].code );
-         delete_bitstrp( &hufftree->encoding[i].code_value );
-      }
-      delete_Node(hufftree->tree);
-      hufftree->tree=NULL;
+      free(hufftree->encoding);
+      free(hufftree->nodesPool);
+      free(hufftree);
    }
-
 }
 
 void delete_Hufftreep(Hufftree** hufftree) {
@@ -117,35 +91,28 @@ static int compare(const void*a, const void *b) {
     Node* bb = *(Node**) b;
     assert (aa != bb);
     return aa->frequency - bb->frequency;
-   // if (aa->frequency > bb->frequency)
-   //    return 1;
-
-   // if (aa->frequency == bb->frequency) {
-   //    if (aa->leftChild == NULL && (bb->leftChild == NULL)) {
-   //       //both leaf
-   //       return aa->data - bb->data;
-   //    } else
-   //      return (aa->leftChild) ? 0 : 1; //leaf > node
-
-   // } else
-   //   return -1;
 }
 
 Hufftree* new_Hufftree(Frequency *frequency, int size)
 {
    Hufftree *hufftree = (Hufftree *)calloc(1, sizeof(Hufftree));
+   Node* nodespool = hufftree->nodesPool = (Node*) calloc(size*2, sizeof(Node));
+   assert(hufftree);
    hufftree->encoding = calloc(size,sizeof(SEncoding));
+   assert(hufftree->encoding);
    hufftree->size = size;
-   Node** pqueue = alloca(size*sizeof(Node*));
+   Node** pqueue = malloc(size*sizeof(Node*));
+   assert(pqueue);
    int pqueue_sz = 0;
    for (int i=0; i<size; i++) {
       if (frequency[i])
-         pqueue[pqueue_sz++] = new_Node(frequency[i], i);
+         pqueue[pqueue_sz++] = init_Node(frequency[i], i, nodespool++);
    }
 
    Node** pqueue_p = pqueue;
    int nb_nodes=pqueue_sz;
    hufftree->symbols = nb_nodes;
+   assert( pqueue_sz > 1 );
    while (pqueue_sz)
    {
       if (pqueue_sz >= 2) {
@@ -162,144 +129,111 @@ Hufftree* new_Hufftree(Frequency *frequency, int size)
          break;
       }
       pqueue_p++; pqueue_sz--;
-      pqueue_p[0] = new_Node2(top,top2);
+      pqueue_p[0] = init_Node2(top,top2,nodespool++);
    }
-   char* bitvec = new_bitstr(nb_nodes*2);
-   assert(BITSTR_LEN(bitvec) == 0);
-   fill_Node(hufftree->tree, hufftree, bitvec);
-   delete_bitstr( bitvec );
+   free(pqueue);
+   assert(hufftree->tree);
+   fill_Node(hufftree->tree, hufftree, 0, 0);
    return hufftree;
+}
+
+
+
+char* toBinary(uint32_t n, int len)
+{
+    static char binary[64];
+    char *binary_p = binary;
+    uint32_t mask = 1 << len-1;
+    while (mask) {
+      *binary_p++ = n & mask ? '1' : '0';
+      mask >>= 1;
+    }
+    *binary_p = 0;
+    return binary;
 }
 
 
 void print_Hufftree(Hufftree*h) {
    printf("size: %d, symbols: %d\n", h->size, h->symbols);
    for (int i=0; i<h->size; i++) {
-      if (h->encoding[i].code) {
-
-      // if ((i >= '0' && i <='9') || (i >= 'a' && i<='z' || (i >= 'A' && i<='Z')))
-      //    printf("%4c: ", i);
-      // else
-         printf("%4d: ", i);
-         bitstr_print(h->encoding[i].code);
-         //bitstr_print(h->encoding[i].code_value);
-         printf("\n");
+      if (h->encoding[i].bit_length) {
+         printf("%4d: %s\n", i, toBinary(h->encoding[i].code, h->encoding[i].bit_length));
       }
    }
    printf("\n");
 }
 
-char * encode_Hufftree(Hufftree*h, unsigned v)
+void encode_Hufftree(Hufftree*h, DataType v, PutBitContext *s)
 {
    assert(v < h->size );
-   return h->encoding[ v ].code;
+   int bit_length = h->encoding[ v ].bit_length;
+   put_bits(s, h->encoding[ v ].bit_length, h->encoding[ v ].code);
 }
 
 
-int decode_Hufftree(Hufftree*h, char * from, char ** end)
+DataType decode_Hufftree(Hufftree*h, GetBitContext *s)
 {
    Node* node = h->tree;
-   char * from_p = from;
-
    for(;;){
-      node = *from_p++ ? node->rightChild : node->leftChild;
+      node =  get_bits1(s) ? node->rightChild : node->leftChild;
       if (!node->leftChild)
       {
-         if (end) *end = from_p;
          return node->data;
       }
    }
-
 }
 
-
-// static int ilog2_32(uint32_t v)
-// {
-//    if (!v)
-//       return 0;
-
-//    return 32-__builtin_clz(v);
-// }
-
-
-char *  encodetree_Hufmantree( Hufftree*h) {
-
-   int len = 0;
-
-   char * packtree = new_bitstr(h->symbols*2); /* idnk how to calculate max size*/
+size_t encodetree_Hufmantree( Hufftree*h, PutBitContext *s)
+{
+   size_t bit_legnth = 0;
+   int bitwidth = ilog2_32( h->size-1 );
+   // int bitwidth = ilog2_32(h->size-1);
+   // put_bits(s, 4, bitwidth-1);
 
    void pack(Node*n ) {
         if (n->leftChild) {
-            packtree[len++] = 0;
+            put_bits(s,1,0);
             pack(n->leftChild);
             pack(n->rightChild);
         } else {
-          packtree[len++] = 1;
-          h->encoding[n->data].send_count = 0;
+            put_bits(s,1,1);
+            put_bits(s,bitwidth,n->data);
+            bit_legnth+=8;
         }
+        bit_legnth++;
    }
-
    pack(h->tree);
-   BITSTR_LEN(packtree) = len;
-
-   return packtree;
+   return bit_legnth;
 }
 
-
-
-Hufftree*  new_Hufftree2(char * from, char **end) {
+Hufftree*  new_Hufftree2(GetBitContext *s, int size)
+{
 
    Hufftree *hufftree = calloc(1, sizeof(Hufftree));
 
+//   int bitsize = get_bits(s,4)+1;
+//   hufftree->size = 1 << bitsize;
+   hufftree->size = size;
+   int bitsize = ilog2_32(size-1);
+   Node* nodespool = hufftree->nodesPool = (Node*) calloc(hufftree->size*2, sizeof(Node));
+
    Node* unpack() {
-      if  (*from++)
-         return new_Node(0,0);
+      if (get_bits1(s)) {
+         hufftree->symbols++;
+         return init_Node(0,get_bits(s,bitsize),nodespool++);
+      }
       else {
            Node* left = unpack();
            Node* right = unpack();
-           return new_Node2( left, right );
+           return init_Node2( left, right, nodespool++ );
       }
    }
    hufftree->tree = unpack();
-   if (end) *end = from;
+
    return hufftree;
 }
 
-char * encode_Hufftree2(Hufftree*h, unsigned v)
-{
-   assert(v < h->size );
-   if (h->encoding[v].send_count++) {
-      return  h->encoding[ v ].code;
-   } else {
-      return  h->encoding[ v ].code_value;
-   }
-}
-
-
-int decode_Hufftree2(Hufftree*h, char * from, char ** end)
-{
-  Node* node = h->tree;
-  char * from_p = from;
-  //printf("{decode: ");
-
-  for(;;){
-   //printf("%d",*from_p);
-    node = *from_p++ ? node->rightChild : node->leftChild;
-    if (!node->leftChild)
-    {
-
-      if (node->frequency++ == 0)
-           node->data = decode_golomb_u_str(from_p,&from_p);
-      if (end) *end = from_p;
-     // printf("=%u}\n",node->data);
-      return node->data;
-    }
-  }
-
-}
-
-
-static void PrintPretty(Node*n, char * indent,  bool last)
+static void PrintPretty(Node*n, char * indent,  bool last, const char *name)
    {
        printf(indent);
        int len = strlen(indent);
@@ -307,7 +241,6 @@ static void PrintPretty(Node*n, char * indent,  bool last)
        if (last)
        {
            printf("\\-");
-
            strcat(indent,"  ");
        }
        else
@@ -317,19 +250,19 @@ static void PrintPretty(Node*n, char * indent,  bool last)
        }
 
        if (n->leftChild)
-         printf("*\n");
+         printf("%s\n",name);
       else
-         printf("%d\n",n->data);
+         printf("%s = %u\n",name,n->data);
 
        if (n->leftChild) {
-           PrintPretty(n->leftChild, indent, false);
-           PrintPretty(n->rightChild, indent, true);
+           PrintPretty(n->leftChild, indent, false,"Bit0");
+           PrintPretty(n->rightChild, indent, true,"Bit1");
        }
        indent[len] = 0;
    }
 
 
 void print_Hufftree2(Hufftree*h) {
-    char indent[8192] = {0};
-    PrintPretty(h->tree,indent,true);
+    static char indent[8192] = {0};
+    PrintPretty(h->tree,indent,true,"root");
 }
