@@ -198,7 +198,7 @@ size_t encodetree_Hufmantree( Hufftree*h, PutBitContext *s)
         } else {
             put_bits(s,1,1);
             put_bits(s,bitwidth,n->data);
-            bit_legnth+=8;
+            bit_legnth+=bitwidth;
         }
         bit_legnth++;
    }
